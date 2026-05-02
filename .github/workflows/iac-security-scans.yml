@@ -1,0 +1,123 @@
+name: IaC Security Scans
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_ROOT: terraform
+  KICS_VERSION: 2.1.20
+  REGULA_VERSION: 3.2.1
+
+jobs:
+  checkov:
+    name: Checkov Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install Checkov
+        run: pip install checkov
+
+      - name: Run Checkov
+        run: |
+          mkdir -p reports/checkov
+          checkov \
+            -d "$TF_ROOT" \
+            --framework terraform \
+            --output cli \
+            --output json \
+            --output-file-path console,reports/checkov/checkov-report.json
+
+      - name: Upload Checkov report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: checkov-report
+          path: reports/checkov/checkov-report.json
+
+  kics:
+    name: KICS Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Run KICS
+        run: |
+          mkdir -p reports/kics
+          docker run --rm \
+            -v "$PWD":/path \
+            checkmarx/kics:v${KICS_VERSION} scan \
+            --path /path/$TF_ROOT \
+            --output-path /path/reports/kics \
+            --report-formats json \
+            --fail-on medium,high,critical \
+            --no-progress
+
+      - name: Upload KICS report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: kics-report
+          path: reports/kics
+
+  regula_opa:
+    name: Regula OPA Scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install OPA
+        run: |
+          curl -sSL -o /tmp/opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+          install /tmp/opa /usr/local/bin/opa
+          opa version
+
+      - name: Install Regula
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/fugue/regula/releases/download/v${REGULA_VERSION}/regula_${REGULA_VERSION}_Linux_x86_64.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin"
+          chmod +x "$HOME/.local/bin/regula"
+          "$HOME/.local/bin/regula" version
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Run Regula
+        run: |
+          mkdir -p reports/regula
+          "$HOME/.local/bin/regula" run "$TF_ROOT" \
+            --format json \
+            --severity medium \
+            -x FG_R00031 \
+            -x FG_R00274 \
+            -x FG_R00275 \
+            -x FG_R00101 \
+            > reports/regula/regula-report.json
+
+      - name: Upload Regula report
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: regula-report
+          path: reports/regula/regula-report.json
